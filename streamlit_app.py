@@ -10,7 +10,7 @@ st.title("🎫 Support tickets")
 st.write(
     """
     Ova aplikacija omogućuje upravljanje podrškom kroz 5 različitih podkategorija.
-    Podaci se trajno spremaju u lokalnu bazu pa nećete izgubiti tikete nakon osvježavanja stranice.
+    Podaci se trajno spremaju u lokalnu bazu pa nećete izgubiti tikete nakon osvežavanja stranice.
     """
 )
 
@@ -38,10 +38,31 @@ def spremi_podatke(df):
     """Sprema trenutni DataFrame natrag u CSV datoteku."""
     df.to_csv(DB_FILE, index=False)
 
-
-# Inicijalizacija u session state
+# Inicijalizacija u session state na samom početku
 if "df" not in st.session_state:
     st.session_state.df = ucitaj_podatke()
+
+# --- CALLBACK FUNKCIJA ZA SIGURNO SPREMANJE PROMJENA ---
+def spremi_promjene_iz_tablice(kat_ime):
+    """Službena Streamlit metoda za spremanje promjena iz data_editora bez rušenja aplikacije."""
+    editor_key = f"editor_{kat_ime}"
+    
+    if editor_key in st.session_state:
+        promjene = st.session_state[editor_key].get("edited_rows", {})
+        if promjene:
+            # Filtriramo točnu kategoriju kako bismo znali prave indekse
+            df_kat = st.session_state.df[st.session_state.df["Kategorija"] == kat_ime]
+            
+            for lokalni_indeks_str, izmjene in promjene.items():
+                lokalni_indeks = int(lokalni_indeks_str)
+                # Pronalazimo stvarni indeks u glavnoj tablici
+                pravi_indeks = df_kat.index[lokalni_indeks]
+                
+                for stupac, nova_vrijednost in izmjene.items():
+                    st.session_state.df.at[pravi_indeks, stupac] = nova_vrijednost
+            
+            # Trajno zapiši na disk
+            spremi_podatke(st.session_state.df)
 
 # --- SEKCIJA ZA DODAVANJE TIKETA ---
 st.header("Dodaj novi tiket")
@@ -67,7 +88,6 @@ if submitted and issue.strip() != "":
     if len(st.session_state.df) == 0:
         next_id = 1101
     else:
-        # Sigurno izvlačenje ID-a čak i ako ima praznih redova
         id_brojevi = st.session_state.df["ID"].dropna().apply(lambda x: int(str(x).split("-")[1]) if "-" in str(x) else 1100)
         next_id = max(id_brojevi) + 1 if len(id_brojevi) > 0 else 1101
 
@@ -90,7 +110,7 @@ if submitted and issue.strip() != "":
 
     st.session_state.df = pd.concat([df_new, st.session_state.df], axis=0).reset_index(drop=True)
     spremi_podatke(st.session_state.df)
-    st.success(f"Tiket uspješno dodan u kategoriju {kategorija} i spremljen na disk!")
+    st.success(f"Tiket uspješno dodan u kategoriju {kategorija}!")
 elif submitted and issue.strip() == "":
     st.error("Molimo unesite opis problema prije slanja.")
 
@@ -100,7 +120,7 @@ st.header("Postojeći tiketi")
 st.write(f"Ukupan broj tiketa u sustavu: `{len(st.session_state.df)}`")
 
 st.info(
-    "Tikete možete uređivati dvostrukim klikom na ćeliju unutar pripadajuće tablice kategorije.",
+    "Tikete možete uređivati dvostrukim klikom na ćeliju. Promjene se automatski spremaju čim kliknete izvan ćelije.",
     icon="✍️",
 )
 
@@ -108,18 +128,16 @@ tabs = st.tabs(KATEGORIJE)
 
 for tab, kat in zip(tabs, KATEGORIJE):
     with tab:
-        # Filtriramo i čuvamo originalni indeks iz st.session_state.df
         df_kat = st.session_state.df[st.session_state.df["Kategorija"] == kat].copy()
         st.write(f"Broj tiketa u ovoj kategoriji: `{len(df_kat)}`")
         
-        editor_key = f"editor_{kat}"
-        
-        # Priprema čistog prikaza bez index stupca koji bi zbunio data_editor
+        # Priprema čistog prikaza (resetiramo indeks na 0,1,2... unutar taba radi lakšeg praćenja)
         df_prikaz = df_kat.drop(columns=["Kategorija"]).reset_index(drop=True)
         df_prikaz["Datum stavljeno"] = df_prikaz["Datum stavljeno"].astype(str)
         df_prikaz["Deadline"] = df_prikaz["Deadline"].astype(str)
         
-        edited_kat_df = st.data_editor(
+        # Ovdje koristimo on_change poziv koji rješava problem rušenja aplikacije
+        st.data_editor(
             df_prikaz, 
             use_container_width=True,
             hide_index=True,
@@ -130,21 +148,10 @@ for tab, kat in zip(tabs, KATEGORIJE):
                 "Deadline": st.column_config.TextColumn("Deadline (Datum ili 'Neodređeno')", required=True),
             },
             disabled=["ID"],
-            key=editor_key
+            key=f"editor_{kat}",
+            on_change=spremi_promjene_iz_tablice,
+            args=(kat,)
         )
-        
-        # Napredno i sigurno hvatanje promjena preko ključa session_state-a
-        if editor_key in st.session_state and st.session_state[editor_key]["edited_rows"]:
-            promjene = st.session_state[editor_key]["edited_rows"]
-            
-            # Mapiramo lokalni redak iz data_editora natrag na točan indeks u st.session_state.df
-            for lokalni_indeks, izmijenjene_vrijednosti in promjene.items():
-                pravi_indeks = df_kat.index[int(lokalni_indeks)]
-                for stupac, nova_vrijednost in izmijenjene_vrijednosti.items():
-                    st.session_state.df.at[pravi_indeks, stupac] = nova_vrijednost
-            
-            spremi_podatke(st.session_state.df)
-            st.rerun()
 
 
 # --- PRAĆENJE RJEŠAVANJA I ROKOVA ---
@@ -155,9 +162,8 @@ if len(st.session_state.df) > 0:
     df_analiza["Datum stavljeno"] = pd.to_datetime(df_analiza["Datum stavljeno"], errors='coerce').dt.date
     df_analiza = df_analiza.dropna(subset=["Datum stavljeno"])
     
-    st.write("##### Broj zaprimljenih tiketa po danima i njihov trenutni status")
-    
     if not df_analiza.empty:
+        st.write("##### Broj zaprimljenih tiketa po danima i njihov trenutni status")
         dnevni_graf = (
             alt.Chart(df_analiza).mark_bar().encode(
                 x=alt.X("Datum stavljeno:T", title="Datum"),
