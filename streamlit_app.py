@@ -14,7 +14,7 @@ st.write(
 )
 
 # Definiranje 5 podkategorija
-KATEGORIJE = ["BEMV", "BMV", "PN", "Ostalo", "Privatno"]
+KATEGORIJE = ["BEMV", "BMV", "PN", "Ostalo", "Privatno", "Logg reader"]
 
 # Inicijalizacija praznog Dataframe-a u session state ako već ne postoji
 if "df" not in st.session_state:
