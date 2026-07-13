@@ -15,7 +15,7 @@ st.write(
 )
 
 DB_FILE = "tickets_db.csv"
-KATEGORIJE = ["BEMV", "BMV", "PN", "Ostalo", "Privatno"]
+KATEGORIJE = ["BEMV", "BMV", "PN", "Ostalo", "Privatno","Logg reader"]
 
 # --- FUNKCIJE ZA UPRAVLJANJE BAZOM ---
 def ucitaj_podatke():
