@@ -1,10 +1,7 @@
 import datetime
-import random
-
-import altair as alt
-import numpy as np
 import pandas as pd
 import streamlit as st
+import altair as alt
 
 # Postavke stranice
 st.set_page_config(page_title="Support tickets", page_icon="🎫")
@@ -21,7 +18,6 @@ KATEGORIJE = ["BEMV", "BMV", "PN", "Ostalo", "Privatno"]
 
 # Inicijalizacija praznog Dataframe-a u session state ako već ne postoji
 if "df" not in st.session_state:
-    # Stvaramo prazan dataframe s točno definiranim stupcima i tipovima podataka
     st.session_state.df = pd.DataFrame(
         columns=["ID", "Kategorija", "Issue", "Status", "Priority", "Date Submitted"]
     )
@@ -29,22 +25,19 @@ if "df" not in st.session_state:
 # --- SEKCIJA ZA DODAVANJE TIKETA ---
 st.header("Dodaj novi tiket")
 
-with st.form("add_ticket_form"):
+with st.form("add_ticket_form", clear_on_submit=True):
     issue = st.text_area("Opišite problem")
     kategorija = st.selectbox("Podkategorija", KATEGORIJE)
     priority = st.selectbox("Prioritet", ["High", "Medium", "Low"])
     submitted = st.form_submit_button("Podnesi tiket")
 
 if submitted and issue.strip() != "":
-    # Generiranje ID-a (ako je tablica prazna kreće od 1101, inače uvećava najveći postojeći)
     if len(st.session_state.df) == 0:
         next_id = 1101
     else:
-        # Izvlačimo brojeve iz ID-eva i tražimo maksimum
         id_brojevi = st.session_state.df["ID"].apply(lambda x: int(x.split("-")[1]))
         next_id = max(id_brojevi) + 1
 
-    # Za grafove je najbolje koristiti standardni date objekt ili datetime
     today = datetime.date.today()
     
     df_new = pd.DataFrame(
@@ -60,7 +53,6 @@ if submitted and issue.strip() != "":
         ]
     )
 
-    # Spajanje novog tiketa na početak tablice
     st.session_state.df = pd.concat([df_new, st.session_state.df], axis=0).reset_index(drop=True)
     st.success(f"Tiket uspješno dodan u kategoriju {kategorija}!")
 elif submitted and issue.strip() == "":
@@ -79,17 +71,18 @@ st.info(
 # Kreiranje tabova za svaku podkategoriju
 tabs = st.tabs(KATEGORIJE)
 
-# Prolazimo kroz svaki tab i prikazujemo samo tikete koji pripadaju toj kategoriji
+# Prolazimo kroz svaki tab
 for tab, kat in zip(tabs, KATEGORIJE):
     with tab:
-        # Filtriramo dataframe za trenutnu kategoriju
-        df_kat = st.session_state.df[st.session_state.df["Kategorija"] == kat]
+        # Filtriramo i resetiramo indeks kako bi data_editor ispravno pratio retke (0, 1, 2...)
+        df_kat = st.session_state.df[st.session_state.df["Kategorija"] == kat].reset_index()
         
         st.write(f"Broj tiketa u ovoj kategoriji: `{len(df_kat)}`")
         
-        # Prikaz i uređivanje tablice za specifičnu kategoriju
+        editor_key = f"editor_{kat}"
+        
         edited_kat_df = st.data_editor(
-            df_kat,
+            df_kat.drop(columns=["index"]), # Sakrivamo pomoćni indeks iz prikaza
             use_container_width=True,
             hide_index=True,
             column_config={
@@ -103,32 +96,44 @@ for tab, kat in zip(tabs, KATEGORIJE):
                     options=["High", "Medium", "Low"],
                     required=True,
                 ),
-                # Skrivamo stupac kategorije u tabu jer se već nalazi unutar tog taba
                 "Kategorija": None, 
             },
             disabled=["ID", "Date Submitted"],
-            key=f"editor_{kat}" # Jedinstveni ključ za svaki data_editor
+            key=editor_key
         )
         
-        # Ako je korisnik napravio promjene u ovoj tablici, spremamo ih natrag u glavni st.session_state.df
-        if not edited_kat_df.equals(df_kat):
-            st.session_state.df.update(edited_kat_df)
+        # Provjera je li korisnik stvarno kliknuo i promijenio nešto u tablici
+        if editor_key in st.session_state and st.session_state[editor_key]["edited_rows"]:
+            promjene = st.session_state[editor_key]["edited_rows"]
+            
+            # Prolazimo kroz sve uredi-redove i mapiramo ih natrag u st.session_state.df pomoću originalnog indeksa
+            for lokalni_indeks, izmijenjene_vrijednosti in promjene.items():
+                originalni_indeks = df_kat.loc[int(lokalni_indeks), "index"]
+                for stupac, nova_vrijednost in izmijenjene_vrijednosti.items():
+                    st.session_state.df.at[originalni_indeks, stupac] = nova_vrijednost
+            
             st.rerun()
 
 
 # --- STATISTIKA (GRAFOVI) ---
 st.header("Statistika")
 
+# Grafove crtamo samo ako imamo barem 1 tiket u sustavu
 if len(st.session_state.df) > 0:
-    # Metrike na vrhu statistike
     col1, col2, col3 = st.columns(3)
     num_open_tickets = len(st.session_state.df[st.session_state.df.Status == "Open"])
     col1.metric(label="Broj otvorenih tiketa", value=num_open_tickets)
     col2.metric(label="Vrijeme prvog odgovora (sati)", value=5.2)
     col3.metric(label="Prosječno vrijeme rješavanja (sati)", value=16)
 
-    # Osiguravanje ispravnog formata datuma za Altair graf
+    # Čišćenje podataka prije slanja u Altair grafikon
     graf_df = st.session_state.df.copy()
+    
+    # Filtriramo van bilo kakve potencijalno prazne redove (sigurnosni korak)
+    graf_df = graf_df.dropna(subset=["Date Submitted", "Status", "Priority"])
+    graf_df = graf_df[graf_df["ID"].astype(str).str.strip() != ""]
+    
+    # Pretvaranje u pravi datetime format
     graf_df["Date Submitted"] = pd.to_datetime(graf_df["Date Submitted"])
 
     # Graf 1: Status tiketa kroz mjesece
