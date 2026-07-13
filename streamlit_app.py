@@ -14,7 +14,7 @@ st.write(
 )
 
 # Definiranje 5 podkategorija
-KATEGORIJE = ["BEMV", "BMV", "PN", "Ostalo", "Privatno", "Logg reader"]
+KATEGORIJE = ["BEMV", "BMV", "PN", "Ostalo", "Privatno","Logg reader"]
 
 # Inicijalizacija praznog Dataframe-a u session state ako već ne postoji
 if "df" not in st.session_state:
@@ -51,8 +51,9 @@ if submitted and issue.strip() != "":
         id_brojevi = st.session_state.df["ID"].apply(lambda x: int(str(x).split("-")[1]))
         next_id = max(id_brojevi) + 1
 
-    # Definiranje vrijednosti za deadline
-    final_deadline = "Neodređeno" if neodredeno else deadline_date
+    # KLJUČNI ISPRAVAK: Sve datume pretvaramo u string (YYYY-MM-DD) kako ne bi pucao data_editor
+    final_deadline = "Neodređeno" if neodredeno else deadline_date.strftime("%Y-%m-%d")
+    str_datum_stavljeno = datum_stavljeno.strftime("%Y-%m-%d")
     
     df_new = pd.DataFrame(
         [
@@ -62,7 +63,7 @@ if submitted and issue.strip() != "":
                 "Issue": issue,
                 "Status": "Open",
                 "Priority": priority,
-                "Datum stavljeno": datum_stavljeno,
+                "Datum stavljeno": str_datum_stavljeno,
                 "Deadline": final_deadline,
             }
         ]
@@ -79,7 +80,7 @@ st.header("Postojeći tiketi")
 st.write(f"Ukupan broj tiketa u sustavu: `{len(st.session_state.df)}`")
 
 st.info(
-    "Tikete možete uređivati dvostrukim klikom na ćeliju unutar pripadajuće tablice kategorije. Ovdje možete mijenjati i datume ili ručno upisati 'Neodređeno' u polje Deadline.",
+    "Tikete možete uređivati dvostrukim klikom na ćeliju unutar pripadajuće tablice kategorije. U polje Deadline možete upisati datum (GGGG-MM-DD) ili 'Neodređeno'.",
     icon="✍️",
 )
 
@@ -94,8 +95,13 @@ for tab, kat in zip(tabs, KATEGORIJE):
         
         editor_key = f"editor_{kat}"
         
+        # Osiguravamo da su u df_kat svi datumi tekstualni prije nego uđu u data_editor
+        df_prikaz = df_kat.drop(columns=["index"]).copy()
+        df_prikaz["Datum stavljeno"] = df_prikaz["Datum stavljeno"].astype(str)
+        df_prikaz["Deadline"] = df_prikaz["Deadline"].astype(str)
+        
         edited_kat_df = st.data_editor(
-            df_kat.drop(columns=["index"]), 
+            df_prikaz, 
             use_container_width=True,
             hide_index=True,
             column_config={
@@ -109,8 +115,8 @@ for tab, kat in zip(tabs, KATEGORIJE):
                     options=["High", "Medium", "Low"],
                     required=True,
                 ),
-                "Datum stavljeno": st.column_config.DateColumn(
-                    "Datum stavljeno",
+                "Datum stavljeno": st.column_config.TextColumn(
+                    "Datum stavljeno (GGGG-MM-DD)",
                     required=True,
                 ),
                 "Deadline": st.column_config.TextColumn(
@@ -135,41 +141,38 @@ for tab, kat in zip(tabs, KATEGORIJE):
             st.rerun()
 
 
-# --- NOVO: PRAĆENJE RJEŠAVANJA I ROKOVA ---
+# --- PRAĆENJE RJEŠAVANJA I ROKOVA ---
 st.header("📅 Praćenje rokova i rješavanja po danima")
 
 if len(st.session_state.df) > 0:
-    # Priprema podataka za analizu datuma
     df_analiza = st.session_state.df.copy()
     
-    # Pretvaramo u datum radi lakšeg grupiranja
+    # Pretvaramo u prave datume samo za potrebe grafova i analitike
     df_analiza["Datum stavljeno"] = pd.to_datetime(df_analiza["Datum stavljeno"]).dt.date
     
-    # Prikaz broja otvorenih/zatvorenih tiketa po danu kreiranja
     st.write("##### Broj zaprimljenih tiketa po danima i njihov trenutni status")
     
     dnevni_graf = (
-        alt.Chart(df_analiza)
-        .mark_bar()
-        .encode(
+        alt.Chart(df_analiza).mark_bar().encode(
             x=alt.X("Datum stavljeno:T", title="Datum"),
             y=alt.Y("count():Q", title="Broj tiketa"),
             color="Status:N",
             tooltip=["Datum stavljeno", "Status", "count()"]
-        )
-        .properties(height=250)
+        ).properties(height=250)
     )
     st.altair_chart(dnevni_graf, use_container_width=True)
 
-    # Filtriranje za tikete koji imaju stvarni rok (izbacujemo 'Neodređeno')
+    # Filtriranje za tablice s rokovima
     df_rok = df_analiza[df_analiza["Deadline"] != "Neodređeno"].copy()
-    df_rok["Deadline"] = pd.to_datetime(df_rok["Deadline"]).dt.date
+    
+    # Ako je netko ručno unio krivi format datuma u tablicu, errors='coerce' će ga pretvoriti u NaT (prazno) umjesto da sruši aplikaciju
+    df_rok["Deadline"] = pd.to_datetime(df_rok["Deadline"], errors='coerce').dt.date
+    df_rok = df_rok.dropna(subset=["Deadline"])
     
     col_rok1, col_rok2 = st.columns(2)
     
     with col_rok1:
         st.write("##### Tiketi koji uskoro dospijevaju (Aktivni rokovi)")
-        # Prikazujemo samo one koji nisu zatvoreni, a imaju rok
         aktivni_rokovi = df_rok[df_rok["Status"] != "Closed"].sort_values(by="Deadline")
         if not aktivni_rokovi.empty:
             st.dataframe(
