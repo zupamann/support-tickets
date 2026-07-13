@@ -1,4 +1,5 @@
 import datetime
+import os
 import pandas as pd
 import streamlit as st
 import altair as alt
@@ -9,18 +10,37 @@ st.title("🎫 Support tickets")
 st.write(
     """
     Ova aplikacija omogućuje upravljanje podrškom kroz 5 različitih podkategorija.
-    Možete dodavati nove tikete s rokovima, uređivati postojeće unutar pripadajućih tablica i pratiti statistiku te rokove izvršenja.
+    Podaci se trajno spremaju u lokalnu bazu pa nećete izgubiti tikete nakon osvježavanja stranice.
     """
 )
 
-# Definiranje 5 podkategorija
-KATEGORIJE = ["BEMV", "BMV", "PN", "Ostalo", "Privatno","Logg reader"]
+# Ime datoteke koja će služiti kao naša trajna baza podataka
+DB_FILE = "tickets_db.csv"
+KATEGORIJE = ["BEMV", "BMV", "PN", "Ostalo", "Privatno"]
 
-# Inicijalizacija praznog Dataframe-a u session state ako već ne postoji
-if "df" not in st.session_state:
-    st.session_state.df = pd.DataFrame(
+# --- FUNKCIJE ZA UPRAVLJANJE BAZOM ---
+def ucitaj_podatke():
+    """Učitava podatke iz CSV datoteke ako postoji, inače stvara prazan DataFrame."""
+    if os.path.exists(DB_FILE):
+        try:
+            df = pd.read_csv(DB_FILE, dtype={"ID": str, "Kategorija": str, "Issue": str, "Status": str, "Priority": str, "Datum stavljeno": str, "Deadline": str})
+            return df
+        except Exception:
+            # U slučaju da je datoteka korumpirana ili prazna
+            pass
+            
+    return pd.DataFrame(
         columns=["ID", "Kategorija", "Issue", "Status", "Priority", "Datum stavljeno", "Deadline"]
     )
+
+def spremi_podatke(df):
+    """Sprema trenutni DataFrame natrag u CSV datoteku."""
+    df.to_csv(DB_FILE, index=False)
+
+
+# Inicijalizacija i trajno učitavanje u session state na samom početku
+if "df" not in st.session_state:
+    st.session_state.df = ucitaj_podatke()
 
 # --- SEKCIJA ZA DODAVANJE TIKETA ---
 st.header("Dodaj novi tiket")
@@ -30,15 +50,13 @@ with st.form("add_ticket_form", clear_on_submit=True):
     kategorija = st.selectbox("Podkategorija", KATEGORIJE)
     priority = st.selectbox("Prioritet", ["High", "Medium", "Low"])
     
-    # Odabir datuma
     datum_stavljeno = st.date_input("Datum stavljeno", datetime.date.today())
     
-    # Rok (Deadline) s opcijom "Neodređeno"
     col_date, col_check = st.columns([3, 1])
     with col_date:
         deadline_date = st.date_input("Deadline", datetime.date.today() + datetime.timedelta(days=7))
     with col_check:
-        st.write("") # Poravnanje
+        st.write("") 
         st.write("") 
         neodredeno = st.checkbox("Neodređeno rok")
         
@@ -51,7 +69,6 @@ if submitted and issue.strip() != "":
         id_brojevi = st.session_state.df["ID"].apply(lambda x: int(str(x).split("-")[1]))
         next_id = max(id_brojevi) + 1
 
-    # KLJUČNI ISPRAVAK: Sve datume pretvaramo u string (YYYY-MM-DD) kako ne bi pucao data_editor
     final_deadline = "Neodređeno" if neodredeno else deadline_date.strftime("%Y-%m-%d")
     str_datum_stavljeno = datum_stavljeno.strftime("%Y-%m-%d")
     
@@ -69,8 +86,10 @@ if submitted and issue.strip() != "":
         ]
     )
 
+    # Spoji i odmah zapiši u CSV datoteku na disk
     st.session_state.df = pd.concat([df_new, st.session_state.df], axis=0).reset_index(drop=True)
-    st.success(f"Tiket uspješno dodan u kategoriju {kategorija}!")
+    spremi_podatke(st.session_state.df)
+    st.success(f"Tiket uspješno dodan u kategoriju {kategorija} i spremljen na disk!")
 elif submitted and issue.strip() == "":
     st.error("Molimo unesite opis problema prije slanja.")
 
@@ -84,10 +103,8 @@ st.info(
     icon="✍️",
 )
 
-# Kreiranje tabova za svaku podkategoriju
 tabs = st.tabs(KATEGORIJE)
 
-# Prolazimo kroz svaki tab
 for tab, kat in zip(tabs, KATEGORIJE):
     with tab:
         df_kat = st.session_state.df[st.session_state.df["Kategorija"] == kat].reset_index()
@@ -95,7 +112,6 @@ for tab, kat in zip(tabs, KATEGORIJE):
         
         editor_key = f"editor_{kat}"
         
-        # Osiguravamo da su u df_kat svi datumi tekstualni prije nego uđu u data_editor
         df_prikaz = df_kat.drop(columns=["index"]).copy()
         df_prikaz["Datum stavljeno"] = df_prikaz["Datum stavljeno"].astype(str)
         df_prikaz["Deadline"] = df_prikaz["Deadline"].astype(str)
@@ -105,31 +121,17 @@ for tab, kat in zip(tabs, KATEGORIJE):
             use_container_width=True,
             hide_index=True,
             column_config={
-                "Status": st.column_config.SelectboxColumn(
-                    "Status",
-                    options=["Open", "In Progress", "Closed"],
-                    required=True,
-                ),
-                "Priority": st.column_config.SelectboxColumn(
-                    "Priority",
-                    options=["High", "Medium", "Low"],
-                    required=True,
-                ),
-                "Datum stavljeno": st.column_config.TextColumn(
-                    "Datum stavljeno (GGGG-MM-DD)",
-                    required=True,
-                ),
-                "Deadline": st.column_config.TextColumn(
-                    "Deadline (Datum ili 'Neodređeno')",
-                    required=True,
-                ),
+                "Status": st.column_config.SelectboxColumn("Status", options=["Open", "In Progress", "Closed"], required=True),
+                "Priority": st.column_config.SelectboxColumn("Priority", options=["High", "Medium", "Low"], required=True),
+                "Datum stavljeno": st.column_config.TextColumn("Datum stavljeno (GGGG-MM-DD)", required=True),
+                "Deadline": st.column_config.TextColumn("Deadline (Datum ili 'Neodređeno')", required=True),
                 "Kategorija": None, 
             },
             disabled=["ID"],
             key=editor_key
         )
         
-        # Provjera i spremanje promjena natrag u glavni DataFrame
+        # Provjera promjena, ažuriranje session state-a i automatsko spremanje na disk
         if editor_key in st.session_state and st.session_state[editor_key]["edited_rows"]:
             promjene = st.session_state[editor_key]["edited_rows"]
             
@@ -138,6 +140,8 @@ for tab, kat in zip(tabs, KATEGORIJE):
                 for stupac, nova_vrijednost in izmijenjene_vrijednosti.items():
                     st.session_state.df.at[originalni_indeks, stupac] = nova_vrijednost
             
+            # Odmah spremi promijenjene statuse/datume na disk
+            spremi_podatke(st.session_state.df)
             st.rerun()
 
 
@@ -146,8 +150,6 @@ st.header("📅 Praćenje rokova i rješavanja po danima")
 
 if len(st.session_state.df) > 0:
     df_analiza = st.session_state.df.copy()
-    
-    # Pretvaramo u prave datume samo za potrebe grafova i analitike
     df_analiza["Datum stavljeno"] = pd.to_datetime(df_analiza["Datum stavljeno"]).dt.date
     
     st.write("##### Broj zaprimljenih tiketa po danima i njihov trenutni status")
@@ -162,10 +164,7 @@ if len(st.session_state.df) > 0:
     )
     st.altair_chart(dnevni_graf, use_container_width=True)
 
-    # Filtriranje za tablice s rokovima
     df_rok = df_analiza[df_analiza["Deadline"] != "Neodređeno"].copy()
-    
-    # Ako je netko ručno unio krivi format datuma u tablicu, errors='coerce' će ga pretvoriti u NaT (prazno) umjesto da sruši aplikaciju
     df_rok["Deadline"] = pd.to_datetime(df_rok["Deadline"], errors='coerce').dt.date
     df_rok = df_rok.dropna(subset=["Deadline"])
     
@@ -175,11 +174,7 @@ if len(st.session_state.df) > 0:
         st.write("##### Tiketi koji uskoro dospijevaju (Aktivni rokovi)")
         aktivni_rokovi = df_rok[df_rok["Status"] != "Closed"].sort_values(by="Deadline")
         if not aktivni_rokovi.empty:
-            st.dataframe(
-                aktivni_rokovi[["ID", "Kategorija", "Issue", "Deadline", "Status", "Priority"]],
-                use_container_width=True,
-                hide_index=True
-            )
+            st.dataframe(aktivni_rokovi[["ID", "Kategorija", "Issue", "Deadline", "Status", "Priority"]], use_container_width=True, hide_index=True)
         else:
             st.write("Nemate aktivnih tiketa s definiranim rokovima.")
 
@@ -187,11 +182,7 @@ if len(st.session_state.df) > 0:
         st.write("##### Tiketi bez određenog roka (Neodređeno)")
         neodredeni_tiketi = df_analiza[df_analiza["Deadline"] == "Neodređeno"]
         if not neodredeni_tiketi.empty:
-            st.dataframe(
-                neodredeni_tiketi[["ID", "Kategorija", "Issue", "Status", "Priority"]],
-                use_container_width=True,
-                hide_index=True
-            )
+            st.dataframe(neodredeni_tiketi[["ID", "Kategorija", "Issue", "Status", "Priority"]], use_container_width=True, hide_index=True)
         else:
             st.write("Nema tiketa s neodređenim rokom.")
             
@@ -199,7 +190,7 @@ else:
     st.write("Nema unesenih tiketa za praćenje datuma.")
 
 
-# --- STATISTIKA (OPĆENITI GRAFOVI) ---
+# --- STATISTIKA ---
 st.header("Opća statistika")
 
 if len(st.session_state.df) > 0:
@@ -216,28 +207,18 @@ if len(st.session_state.df) > 0:
     st.write("")
     st.write("##### Ukupni status tiketa po mjesecima (mjesec zaprimanja)")
     status_plot = (
-        alt.Chart(graf_df)
-        .mark_bar()
-        .encode(
+        alt.Chart(graf_df).mark_bar().encode(
             x="month(Datum stavljeno):O",
             y="count():Q",
             xOffset="Status:N",
             color="Status:N",
-        )
-        .configure_legend(
-            orient="bottom", titleFontSize=14, labelFontSize=14, titlePadding=5
-        )
+        ).configure_legend(orient="bottom", titleFontSize=14, labelFontSize=14, titlePadding=5)
     )
     st.altair_chart(status_plot, use_container_width=True, theme="streamlit")
 
     st.write("##### Trenutni prioriteti tiketa")
     priority_plot = (
-        alt.Chart(graf_df)
-        .mark_arc()
-        .encode(theta="count():Q", color="Priority:N")
-        .properties(height=300)
-        .configure_legend(
-            orient="bottom", titleFontSize=14, labelFontSize=14, titlePadding=5
-        )
+        alt.Chart(graf_df).mark_arc().encode(theta="count():Q", color="Priority:N").properties(height=300)
+        .configure_legend(orient="bottom", titleFontSize=14, labelFontSize=14, titlePadding=5)
     )
     st.altair_chart(priority_plot, use_container_width=True, theme="streamlit")
