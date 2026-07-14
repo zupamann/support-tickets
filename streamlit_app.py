@@ -1,8 +1,9 @@
 import datetime
-import os
 import pandas as pd
 import streamlit as st
 import altair as alt
+import requests
+import json
 
 # Postavke stranice
 st.set_page_config(page_title="Support tickets", page_icon="🎫", layout="wide")
@@ -10,59 +11,64 @@ st.title("🎫 Support tickets")
 st.write(
     """
     Ova aplikacija omogućuje upravljanje podrškom kroz 5 različitih podkategorija.
-    Podaci se trajno spremaju u lokalnu bazu pa nećete izgubiti tikete nakon osvežavanja stranice.
+    Podaci se trajno i automatski spremaju u vašu **Google Tablicu** u realnom vremenu!
     """
 )
 
-DB_FILE = "tickets_db.csv"
-KATEGORIJE = ["BEMV", "BMV", "PN", "Ostalo", "Privatno","Logg reader"]
+# --- POSTAVKE GOOGLE SHEETS VEZE ---
+SHEET_ID = "1LiC2lADL7cw4NULG058ne3XAodL6Mc0gxQcIhGNWr6g"
+CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
+APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyVhadipAuP71cUw_e7Xb2eA5pli_6RIa_sd9KoLYqeGwwvPlSvFAzU5_7TCjve-4nUgg/exec"
+
+KATEGORIJE = ["BEMV", "BMV", "PN", "Ostalo", "Privatno", "Logg reader"]
+STUPCI = ["ID", "Kategorija", "Issue", "Status", "Priority", "Datum stavljeno", "Deadline"]
 
 # --- FUNKCIJE ZA UPRAVLJANJE BAZOM ---
+@st.cache_data(ttl=2)
 def ucitaj_podatke():
-    """Učitava podatke iz CSV datoteke ako postoji, inače stvara prazan DataFrame."""
-    def_cols = ["ID", "Kategorija", "Issue", "Status", "Priority", "Datum stavljeno", "Deadline"]
-    if os.path.exists(DB_FILE):
-        try:
-            df = pd.read_csv(DB_FILE, dtype=str)
-            # Osiguraj da imamo sve potrebne stupce
-            for col in def_cols:
-                if col not in df.columns:
-                    df[col] = ""
-            return df[def_cols]
-        except Exception:
-            pass
-            
-    return pd.DataFrame(columns=def_cols)
+    """Učitava podatke izravno iz Google Sheets CSV izvoza."""
+    try:
+        df = pd.read_csv(CSV_URL, dtype=str)
+        # Popunjavanje stupaca ako neki nedostaje
+        for col in STUPCI:
+            if col not in df.columns:
+                df[col] = ""
+        # Filtriramo prazne redove
+        df = df.dropna(subset=["ID"])
+        df = df[df["ID"].astype(str).str.strip() != ""]
+        return df[STUPCI].reset_index(drop=True)
+    except Exception as e:
+        st.error(f"Greška prilikom učitavanja s Google Sheets: {e}")
+        return pd.DataFrame(columns=STUPCI).astype(str)
 
-def spremi_podatke(df):
-    """Sprema trenutni DataFrame natrag u CSV datoteku."""
-    df.to_csv(DB_FILE, index=False)
+def spremi_podatke_u_sheets(df):
+    """Sprema cijeli DataFrame natrag u Google Sheets preko tvoje Web aplikacije."""
+    try:
+        # Pretvaramo DataFrame u JSON format spreman za slanje
+        df_clean = df.fillna("")
+        podaci_json = df_clean.to_dict(orient="records")
+        
+        # Slanje POST zahtjeva tvojoj Google skripti
+        response = requests.post(
+            APPS_SCRIPT_URL, 
+            data=json.dumps(podaci_json), 
+            headers={"Content-Type": "application/json"}
+        )
+        
+        if response.status_code == 200:
+            # Brišemo predmemoriju (cache) kako bi iduće učitavanje povuklo svježe stanje
+            ucitaj_podatke.clear()
+            return True
+        else:
+            st.error(f"Google Sheets je vratio grešku: {response.status_code}")
+            return False
+    except Exception as e:
+        st.error(f"Nije uspjelo povezivanje s Google skriptom: {e}")
+        return False
 
-# Inicijalizacija u session state na samom početku
-if "df" not in st.session_state:
+# Inicijalizacija session state-a pri prvom pokretanju ili na klik gumba
+if "df" not in st.session_state or st.button("🔄 Osvježi podatke iz Google Tablice"):
     st.session_state.df = ucitaj_podatke()
-
-# --- CALLBACK FUNKCIJA ZA SIGURNO SPREMANJE PROMJENA ---
-def spremi_promjene_iz_tablice(kat_ime):
-    """Službena Streamlit metoda za spremanje promjena iz data_editora bez rušenja aplikacije."""
-    editor_key = f"editor_{kat_ime}"
-    
-    if editor_key in st.session_state:
-        promjene = st.session_state[editor_key].get("edited_rows", {})
-        if promjene:
-            # Filtriramo točnu kategoriju kako bismo znali prave indekse
-            df_kat = st.session_state.df[st.session_state.df["Kategorija"] == kat_ime]
-            
-            for lokalni_indeks_str, izmjene in promjene.items():
-                lokalni_indeks = int(lokalni_indeks_str)
-                # Pronalazimo stvarni indeks u glavnoj tablici
-                pravi_indeks = df_kat.index[lokalni_indeks]
-                
-                for stupac, nova_vrijednost in izmjene.items():
-                    st.session_state.df.at[pravi_indeks, stupac] = nova_vrijednost
-            
-            # Trajno zapiši na disk
-            spremi_podatke(st.session_state.df)
 
 # --- SEKCIJA ZA DODAVANJE TIKETA ---
 st.header("Dodaj novi tiket")
@@ -106,11 +112,16 @@ if submitted and issue.strip() != "":
                 "Deadline": final_deadline,
             }
         ]
-    )
+    ).astype(str)
 
-    st.session_state.df = pd.concat([df_new, st.session_state.df], axis=0).reset_index(drop=True)
-    spremi_podatke(st.session_state.df)
-    st.success(f"Tiket uspješno dodan u kategoriju {kategorija}!")
+    # Spajamo novi tiket na vrh lokalne tablice i šaljemo na Google Sheets
+    privremeni_df = pd.concat([df_new, st.session_state.df], axis=0).reset_index(drop=True)
+    
+    with st.spinner("Spremanje u Google Tablicu..."):
+        if spremi_podatke_u_sheets(privremeni_df):
+            st.session_state.df = privremeni_df
+            st.success(f"Tiket uspješno dodan u kategoriju {kategorija} i spremljen na Google Sheets!")
+            st.rerun()
 elif submitted and issue.strip() == "":
     st.error("Molimo unesite opis problema prije slanja.")
 
@@ -120,7 +131,7 @@ st.header("Postojeći tiketi")
 st.write(f"Ukupan broj tiketa u sustavu: `{len(st.session_state.df)}`")
 
 st.info(
-    "Tikete možete uređivati dvostrukim klikom na ćeliju. Promjene se automatski spremaju čim kliknete izvan ćelije.",
+    "Uredite podatke dvostrukim klikom na ćeliju. Promjene se automatski sinkroniziraju s vašim Google Sheets računom.",
     icon="✍️",
 )
 
@@ -128,16 +139,14 @@ tabs = st.tabs(KATEGORIJE)
 
 for tab, kat in zip(tabs, KATEGORIJE):
     with tab:
-        df_kat = st.session_state.df[st.session_state.df["Kategorija"] == kat].copy()
+        df_kat = st.session_state.df[st.session_state.df["Kategorija"] == kat]
         st.write(f"Broj tiketa u ovoj kategoriji: `{len(df_kat)}`")
         
-        # Priprema čistog prikaza (resetiramo indeks na 0,1,2... unutar taba radi lakšeg praćenja)
-        df_prikaz = df_kat.drop(columns=["Kategorija"]).reset_index(drop=True)
-        df_prikaz["Datum stavljeno"] = df_prikaz["Datum stavljeno"].astype(str)
-        df_prikaz["Deadline"] = df_prikaz["Deadline"].astype(str)
+        df_prikaz = df_kat.drop(columns=["Kategorija"]).reset_index(drop=True).astype(str)
         
-        # Ovdje koristimo on_change poziv koji rješava problem rušenja aplikacije
-        st.data_editor(
+        editor_key = f"editor_{kat}"
+        
+        edited_df = st.data_editor(
             df_prikaz, 
             use_container_width=True,
             hide_index=True,
@@ -148,10 +157,25 @@ for tab, kat in zip(tabs, KATEGORIJE):
                 "Deadline": st.column_config.TextColumn("Deadline (Datum ili 'Neodređeno')", required=True),
             },
             disabled=["ID"],
-            key=f"editor_{kat}",
-            on_change=spremi_promjene_iz_tablice,
-            args=(kat,)
+            key=editor_key
         )
+        
+        # Slušamo promjene na data_editoru i šaljemo ih na Google Sheets
+        if editor_key in st.session_state and "edited_rows" in st.session_state[editor_key]:
+            promjene = st.session_state[editor_key]["edited_rows"]
+            if promjene:
+                kopija_df = st.session_state.df.copy()
+                for lokalni_indeks_str, stavke in promjene.items():
+                    lokalni_idx = int(lokalni_indeks_str)
+                    pravi_idx = df_kat.index[lokalni_idx]
+                    
+                    for stupac, nova_vrijednost in stavke.items():
+                        kopija_df.at[pravi_idx, stupac] = str(nova_vrijednost)
+                
+                with st.spinner("Ažuriranje Google Tablice..."):
+                    if spremi_podatke_u_sheets(kopija_df):
+                        st.session_state.df = kopija_df
+                        st.rerun()
 
 
 # --- PRAĆENJE RJEŠAVANJA I ROKOVA ---
