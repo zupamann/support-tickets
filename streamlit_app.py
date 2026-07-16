@@ -20,7 +20,7 @@ SHEET_ID = "1LiC2lADL7cw4NULG058ne3XAodL6Mc0gxQcIhGNWr6g"
 CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyVhadipAuP71cUw_e7Xb2eA5pli_6RIa_sd9KoLYqeGwwvPlSvFAzU5_7TCjve-4nUgg/exec"
 
-KATEGORIJE = ["BEMV", "BMV", "PN", "Ostalo", "Privatno", "Logg reader"]
+KATEGORIJE = ["BEMV", "BMV", "PN", "Ostalo", "Privatno","Logg reader"]
 STUPCI = ["ID", "Kategorija", "Issue", "Status", "Priority", "Datum stavljeno", "Deadline"]
 
 # --- FUNKCIJE ZA UPRAVLJANJE BAZOM ---
@@ -44,11 +44,9 @@ def ucitaj_podatke():
 def spremi_podatke_u_sheets(df):
     """Sprema cijeli DataFrame natrag u Google Sheets preko tvoje Web aplikacije."""
     try:
-        # Pretvaramo DataFrame u JSON format spreman za slanje
         df_clean = df.fillna("")
         podaci_json = df_clean.to_dict(orient="records")
         
-        # Slanje POST zahtjeva tvojoj Google skripti
         response = requests.post(
             APPS_SCRIPT_URL, 
             data=json.dumps(podaci_json), 
@@ -56,7 +54,6 @@ def spremi_podatke_u_sheets(df):
         )
         
         if response.status_code == 200:
-            # Brišemo predmemoriju (cache) kako bi iduće učitavanje povuklo svježe stanje
             ucitaj_podatke.clear()
             return True
         else:
@@ -71,10 +68,12 @@ if "df" not in st.session_state or st.button("🔄 Osvježi podatke iz Google Ta
     st.session_state.df = ucitaj_podatke()
 
 # --- SEKCIJA ZA DODAVANJE TIKETA ---
-st.header("Dodaj novi tiket")
+st.header("Dodaj tikete")
+st.info("💡 Možete unijeti više tiketa odjednom! Svaki zaseban tiket upišite u **novi red** u polje ispod. Svi će dobiti istu kategoriju, prioritet i rok dospijeća.", icon="📝")
 
 with st.form("add_ticket_form", clear_on_submit=True):
-    issue = st.text_area("Opišite problem")
+    # Ovdje korisnik upisuje jedan ili više taskova (svaki u svoj red)
+    issues_text = st.text_area("Opišite problem / probleme (svaki problem u novi red)", height=150)
     kategorija = st.selectbox("Podkategorija", KATEGORIJE)
     priority = st.selectbox("Prioritet", ["High", "Medium", "Low"])
     
@@ -88,42 +87,50 @@ with st.form("add_ticket_form", clear_on_submit=True):
         st.write("") 
         neodredeno = st.checkbox("Neodređeno rok")
         
-    submitted = st.form_submit_button("Podnesi tiket")
+    submitted = st.form_submit_button("Podnesi tiket(e)")
 
-if submitted and issue.strip() != "":
-    if len(st.session_state.df) == 0:
-        next_id = 1101
-    else:
-        id_brojevi = st.session_state.df["ID"].dropna().apply(lambda x: int(str(x).split("-")[1]) if "-" in str(x) else 1100)
-        next_id = max(id_brojevi) + 1 if len(id_brojevi) > 0 else 1101
-
-    final_deadline = "Neodređeno" if neodredeno else deadline_date.strftime("%Y-%m-%d")
-    str_datum_stavljeno = datum_stavljeno.strftime("%Y-%m-%d")
+if submitted and issues_text.strip() != "":
+    # Rastavljamo uneseni tekst na retke i čistimo prazne linije
+    novi_taskovi = [red.strip() for red in issues_text.split("\n") if red.strip() != ""]
     
-    df_new = pd.DataFrame(
-        [
-            {
-                "ID": f"TICKET-{next_id}",
+    if len(novi_taskovi) > 0:
+        # Određivanje početnog ID-a
+        if len(st.session_state.df) == 0:
+            pocetni_id = 1101
+        else:
+            id_brojevi = st.session_state.df["ID"].dropna().apply(lambda x: int(str(x).split("-")[1]) if "-" in str(x) else 1100)
+            pocetni_id = max(id_brojevi) + 1 if len(id_brojevi) > 0 else 1101
+
+        final_deadline = "Neodređeno" if neodredeno else deadline_date.strftime("%Y-%m-%d")
+        str_datum_stavljeno = datum_stavljeno.strftime("%Y-%m-%d")
+        
+        # Kreiramo listu novih tiketa
+        novi_tiketi_lista = []
+        for i, task in enumerate(novi_taskovi):
+            novi_tiketi_lista.append({
+                "ID": f"TICKET-{pocetni_id + i}",
                 "Kategorija": kategorija,
-                "Issue": issue,
+                "Issue": task,
                 "Status": "Open",
                 "Priority": priority,
                 "Datum stavljeno": str_datum_stavljeno,
                 "Deadline": final_deadline,
-            }
-        ]
-    ).astype(str)
+            })
+            
+        df_new = pd.DataFrame(novi_tiketi_lista).astype(str)
 
-    # Spajamo novi tiket na vrh lokalne tablice i šaljemo na Google Sheets
-    privremeni_df = pd.concat([df_new, st.session_state.df], axis=0).reset_index(drop=True)
-    
-    with st.spinner("Spremanje u Google Tablicu..."):
-        if spremi_podatke_u_sheets(privremeni_df):
-            st.session_state.df = privremeni_df
-            st.success(f"Tiket uspješno dodan u kategoriju {kategorija} i spremljen na Google Sheets!")
-            st.rerun()
-elif submitted and issue.strip() == "":
-    st.error("Molimo unesite opis problema prije slanja.")
+        # Spajamo nove tikete na vrh i šaljemo u Sheets
+        privremeni_df = pd.concat([df_new, st.session_state.df], axis=0).reset_index(drop=True)
+        
+        with st.spinner("Spremanje svih tiketa u Google Tablicu..."):
+            if spremi_podatke_u_sheets(privremeni_df):
+                st.session_state.df = privremeni_df
+                st.success(f"Uspješno dodano {len(novi_taskovi)} tiketa u kategoriju {kategorija} i spremljeno na Google Sheets!")
+                st.rerun()
+    else:
+        st.error("Nema valjanog unosa. Unesite barem jedan redak teksta.")
+elif submitted and issues_text.strip() == "":
+    st.error("Molimo unesite barem jedan opis problema prije slanja.")
 
 
 # --- SEKCIJA ZA PRIKAZ I UREĐIVANJE PO KATEGORIJAMA ---
